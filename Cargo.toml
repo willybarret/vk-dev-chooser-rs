@@ -2,6 +2,9 @@
 name = "vk_dev_chooser"
 version = "0.2.0"
 edition = "2024"
+authors = ["Willian Barreto"]
+license = "Apache-2.0"
+description = "A Vulkan layer to force a specific physical device for applications lacking GPU selection."
 
 [lib]
 crate-type = ["cdylib"]
