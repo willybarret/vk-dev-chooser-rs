@@ -105,14 +105,13 @@ fn run_system_dialog(options: &[String]) -> i32 {
             });
         }
 
-        if let Ok(output) = Command::new("kdialog").args(&kdialog_args).output() {
-            if output.status.success() {
+        if let Ok(output) = Command::new("kdialog").args(&kdialog_args).output()
+            && output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 if let Ok(idx) = stdout.trim().parse::<i32>() {
                     return idx;
                 }
             }
-        }
     }
 
     if try_zenity {
@@ -138,16 +137,13 @@ fn run_system_dialog(options: &[String]) -> i32 {
             .env("GDK_BACKEND", "x11")
             .args(&zenity_args)
             .output()
-        {
-            if output.status.success() {
+            && output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
-                if let Some(idx_str) = stdout.split(':').next() {
-                    if let Ok(idx) = idx_str.trim().parse::<i32>() {
+                if let Some(idx_str) = stdout.split(':').next()
+                    && let Ok(idx) = idx_str.trim().parse::<i32>() {
                         return idx;
                     }
-                }
             }
-        }
     }
 
     0
