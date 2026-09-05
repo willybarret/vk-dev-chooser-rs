@@ -1,8 +1,8 @@
 use ash::vk;
-use gtk::prelude::*;
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
+use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex};
 
@@ -79,65 +79,78 @@ static CACHED_DEVICE_INDEX: AtomicUsize = AtomicUsize::new(9999);
 const ENV_VARIABLE: &str = "VULKAN_DEVICE_INDEX";
 
 // -----------------------------------------------------------------------------
-// GTK & FILE HELPERS
+// SYSTEM DIALOG
 // -----------------------------------------------------------------------------
-fn run_gtk_pick(options: &[String]) -> i32 {
-    gtk::init().expect("Failed to initialize GTK.");
+fn run_system_dialog(options: &[String]) -> i32 {
+    let gui_override = std::env::var("VULKAN_DEVICE_CHOOSER_GUI").unwrap_or_default();
 
-    let window = gtk::Window::new(gtk::WindowType::Toplevel);
-    window.set_title("Vulkan Device Chooser");
-    window.set_border_width(15);
-    window.set_default_size(400, 100);
+    let try_kdialog = gui_override.is_empty() || gui_override == "kdialog";
+    let try_zenity = gui_override.is_empty() || gui_override == "zenity";
 
-    let vbox = gtk::Box::new(gtk::Orientation::Vertical, 10);
-    window.add(&vbox);
+    if try_kdialog {
+        let mut kdialog_args = vec![
+            "--title".to_string(),
+            "Vulkan Device Chooser".to_string(),
+            "--radiolist".to_string(),
+            "Select the GPU you want to use:".to_string(),
+        ];
 
-    let label = gtk::Label::new(Some("Select the GPU you want to use for this application:"));
-    vbox.pack_start(&label, false, false, 0);
+        for (i, opt) in options.iter().enumerate() {
+            kdialog_args.push(i.to_string());
+            kdialog_args.push(format!("{}: {}", i, opt));
+            kdialog_args.push(if i == 0 {
+                "on".to_string()
+            } else {
+                "off".to_string()
+            });
+        }
 
-    let combo_box = gtk::ComboBoxText::new();
-    for (i, opt) in options.iter().enumerate() {
-        combo_box.append(Some(&i.to_string()), opt);
-    }
-    combo_box.set_active(Some(0));
-    vbox.pack_start(&combo_box, true, true, 0);
-
-    let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 5);
-    vbox.pack_start(&hbox, false, false, 0);
-
-    let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    hbox.pack_start(&spacer, true, true, 0);
-
-    let button = gtk::Button::with_label("Apply");
-    hbox.pack_start(&button, false, false, 0);
-
-    use std::cell::RefCell;
-    use std::rc::Rc;
-    let result = Rc::new(RefCell::new(0));
-    let result_clone = result.clone();
-
-    combo_box.connect_changed({
-        let result_clone = result_clone.clone();
-        move |combo| {
-            if let Some(idx) = combo.active() {
-                *result_clone.borrow_mut() = idx as i32;
+        if let Ok(output) = Command::new("kdialog").args(&kdialog_args).output() {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                if let Ok(idx) = stdout.trim().parse::<i32>() {
+                    return idx;
+                }
             }
         }
-    });
+    }
 
-    let window_clone = window.clone();
-    button.connect_clicked(move |_| {
-        window_clone.close();
-    });
+    if try_zenity {
+        let mut zenity_args = vec![
+            "--list".to_string(),
+            "--radiolist".to_string(),
+            "--title=Vulkan Device Chooser".to_string(),
+            "--text=Select the GPU you want to use:".to_string(),
+            "--column=Pick".to_string(),
+            "--column=GPU".to_string(),
+        ];
 
-    window.connect_destroy(|_| {
-        gtk::main_quit();
-    });
+        for (i, opt) in options.iter().enumerate() {
+            zenity_args.push(if i == 0 {
+                "TRUE".to_string()
+            } else {
+                "FALSE".to_string()
+            });
+            zenity_args.push(format!("{}: {}", i, opt));
+        }
 
-    window.show_all();
-    gtk::main();
+        if let Ok(output) = Command::new("zenity")
+            .env("GDK_BACKEND", "x11")
+            .args(&zenity_args)
+            .output()
+        {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                if let Some(idx_str) = stdout.split(':').next() {
+                    if let Ok(idx) = idx_str.trim().parse::<i32>() {
+                        return idx;
+                    }
+                }
+            }
+        }
+    }
 
-    *result.borrow()
+    0
 }
 
 fn get_family_index(family_name: &str) -> Option<i32> {
@@ -246,11 +259,11 @@ unsafe fn choose_device(
                 if let Some(cached_idx) = get_family_index(family) {
                     chosen = cached_idx as usize;
                 } else {
-                    chosen = run_gtk_pick(&device_names) as usize;
+                    chosen = run_system_dialog(&device_names) as usize;
                     set_family_index(chosen as i32, family);
                 }
             } else {
-                chosen = run_gtk_pick(&device_names) as usize;
+                chosen = run_system_dialog(&device_names) as usize;
             }
 
             println!(

@@ -8,5 +8,4 @@ crate-type = ["cdylib"]
 
 [dependencies]
 ash = "0.38"
-gtk = "0.18"
 libc = "0.2"
