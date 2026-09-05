@@ -105,13 +105,15 @@ fn run_system_dialog(options: &[String]) -> i32 {
             });
         }
 
-        if let Ok(output) = Command::new("kdialog").args(&kdialog_args).output()
-            && output.status.success() {
+        if let Ok(output) = Command::new("kdialog").args(&kdialog_args).output() {
+            if output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 if let Ok(idx) = stdout.trim().parse::<i32>() {
                     return idx;
                 }
             }
+            return 0;
+        }
     }
 
     if try_zenity {
@@ -137,29 +139,43 @@ fn run_system_dialog(options: &[String]) -> i32 {
             .env("GDK_BACKEND", "x11")
             .args(&zenity_args)
             .output()
-            && output.status.success() {
+        {
+            if output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 if let Some(idx_str) = stdout.split(':').next()
-                    && let Ok(idx) = idx_str.trim().parse::<i32>() {
-                        return idx;
-                    }
+                    && let Ok(idx) = idx_str.trim().parse::<i32>()
+                {
+                    return idx;
+                }
             }
+            return 0;
+        }
     }
 
     0
 }
 
+fn get_cache_dir() -> std::path::PathBuf {
+    std::env::var_os("XDG_CACHE_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            let home = std::env::var_os("HOME").unwrap_or_else(|| std::ffi::OsString::from("/tmp"));
+            std::path::PathBuf::from(home).join(".cache")
+        })
+        .join("vkdevicechooser")
+}
+
 fn get_family_index(family_name: &str) -> Option<i32> {
-    let path = format!("/tmp/vkdevicechooser/{}", family_name);
+    let path = get_cache_dir().join(family_name);
     std::fs::read_to_string(path)
         .ok()
         .and_then(|s| s.trim().parse().ok())
 }
 
 fn set_family_index(index: i32, family_name: &str) {
-    let dir = "/tmp/vkdevicechooser";
-    let _ = std::fs::create_dir_all(dir);
-    let path = format!("{}/{}", dir, family_name);
+    let dir = get_cache_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join(family_name);
     let _ = std::fs::write(path, index.to_string());
 }
 
@@ -215,6 +231,7 @@ unsafe fn choose_device(
         }
 
         if let Some(gpu_name) = env.strip_prefix("name:") {
+            let gpu_name_lower = gpu_name.to_lowercase();
             let mut chosen = 9999;
             for (i, &device) in devices.iter().enumerate() {
                 let mut props = vk::PhysicalDeviceProperties::default();
@@ -224,7 +241,7 @@ unsafe fn choose_device(
                 let name_str = name_cstr.to_string_lossy();
 
                 println!("Device {}: ({}) {}", i, props.device_id, name_str);
-                if name_str.contains(gpu_name) {
+                if name_str.to_lowercase().contains(&gpu_name_lower) {
                     chosen = i;
                 }
             }
@@ -289,8 +306,16 @@ pub(crate) unsafe extern "system" fn DeviceChooserLayer_EnumeratePhysicalDevices
     p_physical_devices: *mut vk::PhysicalDevice,
 ) -> vk::Result {
     unsafe {
-        let map = INSTANCE_DISPATCH.lock().unwrap();
-        let dispatch = map.get(&instance).expect("Instance not found in dispatch");
+        let map = INSTANCE_DISPATCH.lock().unwrap_or_else(|e| e.into_inner());
+        let dispatch = match map.get(&instance) {
+            Some(d) => d,
+            None => {
+                if !p_physical_device_count.is_null() {
+                    *p_physical_device_count = 0;
+                }
+                return vk::Result::ERROR_INITIALIZATION_FAILED;
+            }
+        };
 
         let env = std::env::var(ENV_VARIABLE).unwrap_or_default();
         if env.is_empty() {
@@ -328,8 +353,16 @@ pub(crate) unsafe extern "system" fn DeviceChooserLayer_EnumeratePhysicalDeviceG
     p_physical_device_group_properties: *mut vk::PhysicalDeviceGroupProperties,
 ) -> vk::Result {
     unsafe {
-        let map = INSTANCE_DISPATCH.lock().unwrap();
-        let dispatch = map.get(&instance).expect("Instance not found in dispatch");
+        let map = INSTANCE_DISPATCH.lock().unwrap_or_else(|e| e.into_inner());
+        let dispatch = match map.get(&instance) {
+            Some(d) => d,
+            None => {
+                if !p_physical_device_group_count.is_null() {
+                    *p_physical_device_group_count = 0;
+                }
+                return vk::Result::ERROR_INITIALIZATION_FAILED;
+            }
+        };
 
         let enum_groups = match dispatch
             .enumerate_physical_device_groups
@@ -488,7 +521,7 @@ pub(crate) unsafe extern "system" fn DeviceChooserLayer_CreateInstance(
 
         INSTANCE_DISPATCH
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .insert(instance, dispatch_table);
         vk::Result::SUCCESS
     }
@@ -500,7 +533,7 @@ pub(crate) unsafe extern "system" fn DeviceChooserLayer_DestroyInstance(
     p_allocator: *const vk::AllocationCallbacks,
 ) {
     unsafe {
-        let mut map = INSTANCE_DISPATCH.lock().unwrap();
+        let mut map = INSTANCE_DISPATCH.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(dispatch) = map.remove(&instance) {
             (dispatch.destroy_instance)(instance, p_allocator);
         }
@@ -561,7 +594,7 @@ pub(crate) unsafe extern "system" fn DeviceChooserLayer_CreateDevice(
 
         DEVICE_DISPATCH
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .insert(device, dispatch_table);
         vk::Result::SUCCESS
     }
@@ -573,7 +606,7 @@ pub(crate) unsafe extern "system" fn DeviceChooserLayer_DestroyDevice(
     p_allocator: *const vk::AllocationCallbacks,
 ) {
     unsafe {
-        let mut map = DEVICE_DISPATCH.lock().unwrap();
+        let mut map = DEVICE_DISPATCH.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(dispatch) = map.remove(&device) {
             (dispatch.destroy_device)(device, p_allocator);
         }
@@ -608,7 +641,7 @@ pub(crate) unsafe extern "system" fn DeviceChooserLayer_GetDeviceProcAddr(
             );
         }
 
-        let map = DEVICE_DISPATCH.lock().unwrap();
+        let map = DEVICE_DISPATCH.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(dispatch) = map.get(&device) {
             return (dispatch.get_device_proc_addr)(device, p_name);
         }
@@ -690,7 +723,7 @@ pub(crate) unsafe extern "system" fn DeviceChooserLayer_GetInstanceProcAddr(
             );
         }
 
-        let map = INSTANCE_DISPATCH.lock().unwrap();
+        let map = INSTANCE_DISPATCH.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(dispatch) = map.get(&instance) {
             return (dispatch.get_instance_proc_addr)(instance, p_name);
         }
