@@ -1,3 +1,12 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Willian Barreto
+
+//! # Vulkan Device Chooser Layer
+//!
+//! An implicit Vulkan layer that intercepts device enumeration calls 
+//! (`vkEnumeratePhysicalDevices`, `vkEnumeratePhysicalDeviceGroups`) 
+//! to force applications to use a user-selected GPU.use ash::vk;
+
 use ash::vk;
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
